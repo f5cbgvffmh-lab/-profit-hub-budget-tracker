@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { db } from "./firebase";
+import {
+  collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch
+} from "firebase/firestore";
 
-// ─── PERSISTENT STORAGE ───
-const STORAGE_KEY = "profithub-data";
-
+// ─── DEFAULTS (used for first-time seeding) ───
 const defaultAccounts = [
   { id: "a1", name: "Checking", type: "Bank", balance: 8420, icon: "🏦" },
   { id: "a2", name: "Savings", type: "Bank", balance: 15780, icon: "💰" },
@@ -31,8 +33,6 @@ const defaultInvestments = [
   { id: "i4", name: "Real Estate REIT", cost: 5230, value: 4950 },
 ];
 
-const CATEGORIES = ["Housing","Food","Transport","Entertainment","Health","Shopping","Utilities","Insurance","Savings","Investments","Debt Payments","Personal Care","Education","Gifts","Income"];
-
 const defaultBudget = {
   income: [3200, 3200, 850, 0, 0],
   allocations: [
@@ -52,6 +52,8 @@ const defaultBudget = {
     { cat: "Gifts", group: "Wants", amount: 50 },
   ],
 };
+
+const CATEGORIES = ["Housing","Food","Transport","Entertainment","Health","Shopping","Utilities","Insurance","Savings","Investments","Debt Payments","Personal Care","Education","Gifts","Income"];
 
 function genId() { return Math.random().toString(36).substr(2, 9); }
 
@@ -95,14 +97,12 @@ const C = {
   text: "#E6EDF3", textMid: "#8B949E", textDim: "#484F58",
 };
 
-// ─── UTILITY ───
 const fmt = n => `$${Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0})}`;
 const pct = n => `${(n*100).toFixed(1)}%`;
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const MONTH_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const getWeek = d => { const s = new Date(d.getFullYear(),0,1); return Math.ceil(((d-s)/864e5+s.getDay()+1)/7); };
 
-// ─── COMPONENTS ───
+// ─── MICRO COMPONENTS ───
 function Donut({ value, max, color, size=72, stroke=7 }) {
   const p = max===0?0:Math.min(value/max,1);
   const r = (size-stroke)/2, circ = 2*Math.PI*r;
@@ -165,14 +165,25 @@ const btnPrimary = {
   padding:"10px 20px",borderRadius:8,border:"none",background:C.accent,color:"#fff",
   fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit",
 };
-const btnSecondary = {
-  ...btnPrimary, background:"transparent", border:`1px solid ${C.border}`, color:C.textMid,
-};
+const btnSecondary = { ...btnPrimary, background:"transparent", border:`1px solid ${C.border}`, color:C.textMid };
 const btnDanger = { ...btnPrimary, background:C.red };
 const btnSmall = {
   padding:"5px 12px",borderRadius:6,border:`1px solid ${C.border}`,background:"transparent",
   color:C.textMid,fontSize:11,cursor:"pointer",fontFamily:"inherit",
 };
+
+// ─── FIRESTORE HELPERS ───
+async function fbSet(collName, id, data) {
+  try { await setDoc(doc(db, collName, id), data); } catch(e) { console.error("Firestore write error:", e); }
+}
+async function fbDelete(collName, id) {
+  try { await deleteDoc(doc(db, collName, id)); } catch(e) { console.error("Firestore delete error:", e); }
+}
+async function fbSeedCollection(collName, items) {
+  const batch = writeBatch(db);
+  items.forEach(item => { batch.set(doc(db, collName, item.id), item); });
+  await batch.commit();
+}
 
 // ─── MAIN APP ───
 export default function ProfitHub() {
@@ -182,16 +193,15 @@ export default function ProfitHub() {
   const [month, setMonth] = useState(3);
   const [week, setWeek] = useState(1);
 
-  const [transactions, setTransactions] = useState(seedTransactions);
-  const [accounts, setAccounts] = useState(defaultAccounts);
-  const [goals, setGoals] = useState(defaultGoals);
-  const [debts, setDebts] = useState(defaultDebts);
-  const [investments, setInvestments] = useState(defaultInvestments);
+  const [transactions, setTransactions] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [goals, setGoals] = useState([]);
+  const [debts, setDebts] = useState([]);
+  const [investments, setInvestments] = useState([]);
   const [budget, setBudget] = useState(defaultBudget);
   const [debtStrategy, setDebtStrategy] = useState("snowball");
   const [extraPay, setExtraPay] = useState(200);
 
-  // Modals
   const [showTxnModal, setShowTxnModal] = useState(false);
   const [editTxn, setEditTxn] = useState(null);
   const [showGoalModal, setShowGoalModal] = useState(false);
@@ -206,8 +216,86 @@ export default function ProfitHub() {
   const [depositGoal, setDepositGoal] = useState(null);
 
   const [loaded, setLoaded] = useState(false);
+  const [syncing, setSyncing] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  useEffect(() => { setTimeout(()=>setLoaded(true), 80); }, []);
+  const seeded = useRef(false);
+
+  // ─── FIRESTORE REAL-TIME LISTENERS ───
+  useEffect(() => {
+    const unsubs = [];
+
+    // Transactions
+    unsubs.push(onSnapshot(collection(db, "transactions"), snap => {
+      if (snap.empty && !seeded.current) {
+        seeded.current = true;
+        const seed = seedTransactions();
+        fbSeedCollection("transactions", seed);
+        return;
+      }
+      const items = snap.docs.map(d => d.data());
+      setTransactions(items.sort((a,b) => a.date.localeCompare(b.date)));
+    }));
+
+    // Accounts
+    unsubs.push(onSnapshot(collection(db, "accounts"), snap => {
+      if (snap.empty && !seeded.current) {
+        fbSeedCollection("accounts", defaultAccounts);
+        return;
+      }
+      setAccounts(snap.docs.map(d => d.data()));
+    }));
+
+    // Goals
+    unsubs.push(onSnapshot(collection(db, "goals"), snap => {
+      if (snap.empty && !seeded.current) {
+        fbSeedCollection("goals", defaultGoals);
+        return;
+      }
+      setGoals(snap.docs.map(d => d.data()));
+    }));
+
+    // Debts
+    unsubs.push(onSnapshot(collection(db, "debts"), snap => {
+      if (snap.empty && !seeded.current) {
+        fbSeedCollection("debts", defaultDebts);
+        return;
+      }
+      setDebts(snap.docs.map(d => d.data()));
+    }));
+
+    // Investments
+    unsubs.push(onSnapshot(collection(db, "investments"), snap => {
+      if (snap.empty && !seeded.current) {
+        fbSeedCollection("investments", defaultInvestments);
+        return;
+      }
+      setInvestments(snap.docs.map(d => d.data()));
+    }));
+
+    // Budget (single document)
+    unsubs.push(onSnapshot(doc(db, "settings", "budget"), snap => {
+      if (!snap.exists()) {
+        setDoc(doc(db, "settings", "budget"), defaultBudget);
+        return;
+      }
+      setBudget(snap.data());
+    }));
+
+    // Settings (extra pay, strategy)
+    unsubs.push(onSnapshot(doc(db, "settings", "preferences"), snap => {
+      if (!snap.exists()) {
+        setDoc(doc(db, "settings", "preferences"), { extraPay: 200, debtStrategy: "snowball" });
+        return;
+      }
+      const data = snap.data();
+      setExtraPay(data.extraPay ?? 200);
+      setDebtStrategy(data.debtStrategy ?? "snowball");
+    }));
+
+    setTimeout(() => { setLoaded(true); setSyncing(false); }, 800);
+
+    return () => unsubs.forEach(u => u());
+  }, []);
 
   // ─── FILTERING ───
   const filtered = transactions.filter(t => {
@@ -243,15 +331,13 @@ export default function ProfitHub() {
   const totalLiab = accounts.filter(a=>a.balance<0).reduce((s,a)=>s+Math.abs(a.balance),0)+totalDebt;
   const netWorth = totalAssets - totalLiab;
 
-  const budgetIncome = budget.income.reduce((s,v)=>s+v,0);
-  const budgetTotal = budget.allocations.reduce((s,a)=>s+a.amount,0);
+  const budgetIncome = (budget.income||[]).reduce((s,v)=>s+v,0);
+  const budgetTotal = (budget.allocations||[]).reduce((s,a)=>s+a.amount,0);
 
-  // Sorted debts
   const sortedDebts = debtStrategy==="snowball"
     ? [...debts].sort((a,b)=>a.balance-b.balance)
     : [...debts].sort((a,b)=>b.rate-a.rate);
 
-  // Period options
   const periodOpts = () => {
     if(view==="daily") return Array.from({length:new Date(year,month+1,0).getDate()},(_,i)=>({l:`${i+1}`,v:i+1}));
     if(view==="weekly") return Array.from({length:52},(_,i)=>({l:`W${i+1}`,v:i+1}));
@@ -261,46 +347,56 @@ export default function ProfitHub() {
     return [{l:"2026",v:0}];
   };
 
-  // ─── CRUD HELPERS ───
+  // ─── CRUD (writes to Firestore, listeners auto-update state) ───
   const saveTxn = (data) => {
-    if(data.id) { setTransactions(prev=>prev.map(t=>t.id===data.id?data:t)); }
-    else { setTransactions(prev=>[...prev,{...data,id:genId()}].sort((a,b)=>a.date.localeCompare(b.date))); }
+    const item = data.id ? data : { ...data, id: genId() };
+    fbSet("transactions", item.id, item);
     setShowTxnModal(false); setEditTxn(null);
   };
-  const deleteTxn = (id) => { setTransactions(prev=>prev.filter(t=>t.id!==id)); setShowTxnModal(false); setEditTxn(null); };
+  const deleteTxn = (id) => { fbDelete("transactions", id); setShowTxnModal(false); setEditTxn(null); };
 
   const saveGoal = (data) => {
-    if(data.id) { setGoals(prev=>prev.map(g=>g.id===data.id?data:g)); }
-    else { setGoals(prev=>[...prev,{...data,id:genId()}]); }
+    const item = data.id ? data : { ...data, id: genId() };
+    fbSet("goals", item.id, item);
     setShowGoalModal(false); setEditGoal(null);
   };
-  const deleteGoal = (id) => { setGoals(prev=>prev.filter(g=>g.id!==id)); setShowGoalModal(false); setEditGoal(null); };
+  const deleteGoal = (id) => { fbDelete("goals", id); setShowGoalModal(false); setEditGoal(null); };
 
   const depositToGoal = (id, amt) => {
-    setGoals(prev=>prev.map(g=>g.id===id?{...g,saved:g.saved+amt}:g));
+    const goal = goals.find(g => g.id === id);
+    if (goal) fbSet("goals", id, { ...goal, saved: goal.saved + amt });
     setShowDepositModal(false); setDepositGoal(null);
   };
 
   const saveDebt = (data) => {
-    if(data.id) { setDebts(prev=>prev.map(d=>d.id===data.id?data:d)); }
-    else { setDebts(prev=>[...prev,{...data,id:genId()}]); }
+    const item = data.id ? data : { ...data, id: genId() };
+    fbSet("debts", item.id, item);
     setShowDebtModal(false); setEditDebt(null);
   };
-  const deleteDebt = (id) => { setDebts(prev=>prev.filter(d=>d.id!==id)); setShowDebtModal(false); setEditDebt(null); };
+  const deleteDebt = (id) => { fbDelete("debts", id); setShowDebtModal(false); setEditDebt(null); };
 
   const saveInv = (data) => {
-    if(data.id) { setInvestments(prev=>prev.map(i=>i.id===data.id?data:i)); }
-    else { setInvestments(prev=>[...prev,{...data,id:genId()}]); }
+    const item = data.id ? data : { ...data, id: genId() };
+    fbSet("investments", item.id, item);
     setShowInvModal(false); setEditInv(null);
   };
-  const deleteInv = (id) => { setInvestments(prev=>prev.filter(i=>i.id!==id)); setShowInvModal(false); setEditInv(null); };
+  const deleteInv = (id) => { fbDelete("investments", id); setShowInvModal(false); setEditInv(null); };
 
   const saveAcct = (data) => {
-    if(data.id) { setAccounts(prev=>prev.map(a=>a.id===data.id?data:a)); }
-    else { setAccounts(prev=>[...prev,{...data,id:genId()}]); }
+    const item = data.id ? data : { ...data, id: genId() };
+    fbSet("accounts", item.id, item);
     setShowAcctModal(false); setEditAcct(null);
   };
-  const deleteAcct = (id) => { setAccounts(prev=>prev.filter(a=>a.id!==id)); setShowAcctModal(false); setEditAcct(null); };
+  const deleteAcct = (id) => { fbDelete("accounts", id); setShowAcctModal(false); setEditAcct(null); };
+
+  const updateBudget = (newBudget) => {
+    setBudget(newBudget);
+    setDoc(doc(db, "settings", "budget"), newBudget);
+  };
+
+  const updatePrefs = (prefs) => {
+    setDoc(doc(db, "settings", "preferences"), prefs);
+  };
 
   const navItems = [
     { id:"dashboard", icon:"◆", label:"Dashboard" },
@@ -314,11 +410,21 @@ export default function ProfitHub() {
   ];
 
   const views = ["daily","weekly","biweekly","monthly","semi-annual","yearly"];
-
   const card = { background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:"20px 22px", position:"relative", overflow:"hidden" };
 
+  // ─── LOADING SCREEN ───
+  if (!loaded) {
+    return (
+      <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+        <div style={{width:40,height:40,borderRadius:10,background:`linear-gradient(135deg,${C.accent},${C.cyan})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:800,color:"#fff",animation:"pulse 1.5s infinite"}}>P</div>
+        <div style={{color:C.textMid,fontSize:13,fontFamily:"'IBM Plex Sans',system-ui,sans-serif"}}>Syncing your data...</div>
+        <style>{`@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }`}</style>
+      </div>
+    );
+  }
+
   return (
-    <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'IBM Plex Sans','DM Sans',system-ui,sans-serif",opacity:loaded?1:0,transition:"opacity 0.4s"}}>
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text,fontFamily:"'IBM Plex Sans','DM Sans',system-ui,sans-serif"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
         @keyframes modalIn { from { opacity:0; transform:scale(0.95) translateY(8px); } to { opacity:1; transform:scale(1) translateY(0); } }
@@ -332,7 +438,6 @@ export default function ProfitHub() {
           <div style={{width:28,height:28,borderRadius:8,background:`linear-gradient(135deg,${C.accent},${C.cyan})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:800,color:"#fff",flexShrink:0}}>P</div>
           {sidebarOpen && <div><div style={{fontSize:14,fontWeight:700,letterSpacing:"-0.3px",whiteSpace:"nowrap"}}>PROFIT HUB</div><div style={{fontSize:9,color:C.textDim,letterSpacing:1.5}}>BUDGET TRACKER</div></div>}
         </div>
-
         <div style={{flex:1}}>
           {navItems.map(n=>(
             <button key={n.id} onClick={()=>setPage(n.id)} title={n.label}
@@ -345,10 +450,10 @@ export default function ProfitHub() {
             </button>
           ))}
         </div>
-
         <div style={{padding:"12px 16px",borderTop:`1px solid ${C.border}`}}>
           {sidebarOpen && <><div style={{fontSize:9,color:C.textDim,letterSpacing:1}}>NET WORTH</div>
-          <div style={{fontSize:16,fontWeight:700,color:netWorth>=0?C.green:C.red}}>{netWorth>=0?"+":"-"}{fmt(netWorth)}</div></>}
+          <div style={{fontSize:16,fontWeight:700,color:netWorth>=0?C.green:C.red}}>{netWorth>=0?"+":"-"}{fmt(netWorth)}</div>
+          <div style={{fontSize:9,color:C.green,marginTop:2}}>● Synced</div></>}
         </div>
       </div>
 
@@ -362,7 +467,6 @@ export default function ProfitHub() {
               <p style={{margin:"2px 0 0",fontSize:11,color:C.textDim}}>{view} view • {year}</p>
             </div>
           </div>
-
           <div style={{display:"flex",gap:2,background:C.surface,borderRadius:10,padding:3,border:`1px solid ${C.border}`,marginBottom:10}}>
             {views.map(v=>(
               <button key={v} onClick={()=>{setView(v);setWeek(1);}} style={{flex:1,padding:"7px 4px",borderRadius:8,border:"none",cursor:"pointer",background:view===v?C.accent:"transparent",color:view===v?"#fff":C.textMid,fontSize:10.5,fontWeight:view===v?600:400,transition:"all 0.15s",fontFamily:"inherit",textTransform:"capitalize"}}>
@@ -370,7 +474,6 @@ export default function ProfitHub() {
               </button>
             ))}
           </div>
-
           {view!=="yearly" && (
             <div style={{display:"flex",gap:3,overflowX:"auto",paddingBottom:4}}>
               {periodOpts().map(o=>{
@@ -407,9 +510,7 @@ export default function ProfitHub() {
                 </div>
               ))}
             </div>
-
             <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:12}}>
-              {/* Monthly bars */}
               <div style={card}>
                 <div style={{fontSize:12,fontWeight:600,marginBottom:14}}>Income vs Expenses</div>
                 <div style={{display:"flex",gap:10,marginBottom:10}}>
@@ -431,8 +532,6 @@ export default function ProfitHub() {
                   })}
                 </div>
               </div>
-
-              {/* Cat breakdown */}
               <div style={card}>
                 <div style={{fontSize:12,fontWeight:600,marginBottom:14}}>Expense Breakdown</div>
                 <div style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -448,8 +547,6 @@ export default function ProfitHub() {
                 </div>
               </div>
             </div>
-
-            {/* Recent txns */}
             <div style={card}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
                 <span style={{fontSize:12,fontWeight:600}}>Recent Transactions</span>
@@ -504,22 +601,18 @@ export default function ProfitHub() {
                 <div key={i} style={{...card,textAlign:"center"}}><div style={{fontSize:9,color:C.textDim,textTransform:"uppercase",letterSpacing:1.5,marginBottom:4}}>{k.l}</div><div style={{fontSize:22,fontWeight:700,color:k.c}}>{k.v}</div></div>
               ))}
             </div>
-
-            {/* Editable income */}
             <div style={card}>
               <div style={{fontSize:12,fontWeight:600,marginBottom:12}}>Income Sources</div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
                 {["Paycheck 1","Paycheck 2","Side Income","Bonus","Other"].map((lbl,i)=>(
                   <div key={i}>
                     <div style={{fontSize:10,color:C.textDim,marginBottom:3}}>{lbl}</div>
-                    <input type="number" value={budget.income[i]} onChange={e=>{const v=[...budget.income];v[i]=Number(e.target.value)||0;setBudget({...budget,income:v});}}
+                    <input type="number" value={(budget.income||[])[i]||0} onChange={e=>{const v=[...(budget.income||[])];v[i]=Number(e.target.value)||0;updateBudget({...budget,income:v});}}
                       style={{...inputStyle,textAlign:"center",fontSize:13,fontWeight:600,color:C.green}}/>
                   </div>
                 ))}
               </div>
             </div>
-
-            {/* Editable allocations */}
             <div style={card}>
               <div style={{fontSize:12,fontWeight:600,marginBottom:12}}>Budget Allocation</div>
               <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 80px",gap:"6px 10px",alignItems:"center"}}>
@@ -527,17 +620,17 @@ export default function ProfitHub() {
                 <div style={{fontSize:10,color:C.textDim,fontWeight:600}}>GROUP</div>
                 <div style={{fontSize:10,color:C.textDim,fontWeight:600}}>AMOUNT</div>
                 <div style={{fontSize:10,color:C.textDim,fontWeight:600}}>% OF INCOME</div>
-                {budget.allocations.map((a,i)=>(
+                {(budget.allocations||[]).map((a,i)=>(
                   <React.Fragment key={i}>
                     <div style={{fontSize:12,fontWeight:500}}>{a.cat}</div>
                     <div style={{fontSize:11,color:C.textMid}}>{a.group}</div>
-                    <input type="number" value={a.amount} onChange={e=>{const allocs=[...budget.allocations];allocs[i]={...allocs[i],amount:Number(e.target.value)||0};setBudget({...budget,allocations:allocs});}}
+                    <input type="number" value={a.amount} onChange={e=>{const allocs=[...(budget.allocations||[])];allocs[i]={...allocs[i],amount:Number(e.target.value)||0};updateBudget({...budget,allocations:allocs});}}
                       style={{...inputStyle,textAlign:"right",padding:"5px 8px",fontSize:12,color:C.accent}}/>
                     <div style={{fontSize:11,color:C.textMid,textAlign:"right"}}>{budgetIncome===0?"0%":pct(a.amount/budgetIncome)}</div>
                   </React.Fragment>
                 ))}
               </div>
-              <div style={{marginTop:14,display:"flex",justifyContent:"flex-end",gap:16}}>
+              <div style={{marginTop:14}}>
                 <ProgressBar value={budgetTotal} max={budgetIncome} color={budgetTotal>budgetIncome?C.red:C.green} h={8}/>
               </div>
             </div>
@@ -578,18 +671,19 @@ export default function ProfitHub() {
               <div style={{...card,textAlign:"center"}}><div style={{fontSize:9,color:C.textDim,textTransform:"uppercase",letterSpacing:1.5,marginBottom:4}}>Min Payments</div><div style={{fontSize:20,fontWeight:700}}>{fmt(debts.reduce((s,d)=>s+d.minPay,0))}</div></div>
               <div style={{...card,textAlign:"center"}}>
                 <div style={{fontSize:9,color:C.textDim,textTransform:"uppercase",letterSpacing:1.5,marginBottom:4}}>Extra Payment</div>
-                <input type="number" value={extraPay} onChange={e=>setExtraPay(Number(e.target.value)||0)} style={{...inputStyle,textAlign:"center",fontSize:18,fontWeight:700,color:C.cyan,border:"none",background:"transparent",width:100,padding:0}}/>
+                <input type="number" value={extraPay} onChange={e=>{const v=Number(e.target.value)||0;setExtraPay(v);updatePrefs({extraPay:v,debtStrategy});}}
+                  style={{...inputStyle,textAlign:"center",fontSize:18,fontWeight:700,color:C.cyan,border:"none",background:"transparent",width:100,padding:0}}/>
               </div>
               <div style={{...card,textAlign:"center"}}>
                 <div style={{fontSize:9,color:C.textDim,textTransform:"uppercase",letterSpacing:1.5,marginBottom:6}}>Strategy</div>
                 <div style={{display:"flex",gap:4,justifyContent:"center"}}>
                   {["snowball","avalanche"].map(s=>(
-                    <button key={s} onClick={()=>setDebtStrategy(s)} style={{padding:"5px 10px",borderRadius:6,border:`1px solid ${debtStrategy===s?C.accent:C.border}`,background:debtStrategy===s?C.accentDim:"transparent",color:debtStrategy===s?C.accent:C.textMid,fontSize:10.5,fontWeight:debtStrategy===s?600:400,cursor:"pointer",fontFamily:"inherit",textTransform:"capitalize"}}>{s}</button>
+                    <button key={s} onClick={()=>{setDebtStrategy(s);updatePrefs({extraPay,debtStrategy:s});}}
+                      style={{padding:"5px 10px",borderRadius:6,border:`1px solid ${debtStrategy===s?C.accent:C.border}`,background:debtStrategy===s?C.accentDim:"transparent",color:debtStrategy===s?C.accent:C.textMid,fontSize:10.5,fontWeight:debtStrategy===s?600:400,cursor:"pointer",fontFamily:"inherit",textTransform:"capitalize"}}>{s}</button>
                   ))}
                 </div>
               </div>
             </div>
-
             <div style={card}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
                 <span style={{fontSize:12,fontWeight:600}}>Payoff Order ({debtStrategy==="snowball"?"Lowest Balance":"Highest Interest"} First)</span>
@@ -713,33 +807,21 @@ export default function ProfitHub() {
       </div>
 
       {/* ═══ MODALS ═══ */}
-
-      {/* Transaction Modal */}
       <Modal open={showTxnModal} onClose={()=>{setShowTxnModal(false);setEditTxn(null);}} title={editTxn?"Edit Transaction":"Add Transaction"}>
         <TransactionForm initial={editTxn} onSave={saveTxn} onDelete={editTxn?()=>deleteTxn(editTxn.id):null} accounts={accounts}/>
       </Modal>
-
-      {/* Goal Modal */}
       <Modal open={showGoalModal} onClose={()=>{setShowGoalModal(false);setEditGoal(null);}} title={editGoal?"Edit Goal":"Add Goal"}>
         <GoalForm initial={editGoal} onSave={saveGoal} onDelete={editGoal?()=>deleteGoal(editGoal.id):null}/>
       </Modal>
-
-      {/* Deposit Modal */}
       <Modal open={showDepositModal} onClose={()=>{setShowDepositModal(false);setDepositGoal(null);}} title={`Deposit to ${depositGoal?.name||""}`}>
         <DepositForm goal={depositGoal} onDeposit={depositToGoal}/>
       </Modal>
-
-      {/* Debt Modal */}
       <Modal open={showDebtModal} onClose={()=>{setShowDebtModal(false);setEditDebt(null);}} title={editDebt?"Edit Debt":"Add Debt"}>
         <DebtForm initial={editDebt} onSave={saveDebt} onDelete={editDebt?()=>deleteDebt(editDebt.id):null}/>
       </Modal>
-
-      {/* Investment Modal */}
       <Modal open={showInvModal} onClose={()=>{setShowInvModal(false);setEditInv(null);}} title={editInv?"Edit Investment":"Add Investment"}>
         <InvestmentForm initial={editInv} onSave={saveInv} onDelete={editInv?()=>deleteInv(editInv.id):null}/>
       </Modal>
-
-      {/* Account Modal */}
       <Modal open={showAcctModal} onClose={()=>{setShowAcctModal(false);setEditAcct(null);}} title={editAcct?"Edit Account":"Add Account"}>
         <AccountForm initial={editAcct} onSave={saveAcct} onDelete={editAcct?()=>deleteAcct(editAcct.id):null}/>
       </Modal>
@@ -765,7 +847,7 @@ function TransactionForm({ initial, onSave, onDelete, accounts }) {
       <Field label="Date"><input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inputStyle}/></Field>
       <Field label="Description"><input value={desc} onChange={e=>setDesc(e.target.value)} style={inputStyle} placeholder="e.g. Groceries at Trader Joe's"/></Field>
       <Field label="Category"><select value={category} onChange={e=>setCategory(e.target.value)} style={selectStyle}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Field>
-      <Field label="Account"><select value={account} onChange={e=>setAccount(e.target.value)} style={selectStyle}>{accounts.map(a=><option key={a.id}>{a.name}</option>)}</select></Field>
+      <Field label="Account"><select value={account} onChange={e=>setAccount(e.target.value)} style={selectStyle}>{(accounts||[]).map(a=><option key={a.id}>{a.name}</option>)}</select></Field>
       <Field label="Amount"><input type="number" value={amount} onChange={e=>setAmount(Number(e.target.value)||0)} style={inputStyle} min="0"/></Field>
       <div style={{display:"flex",gap:8,marginTop:8}}>
         <button onClick={()=>onSave({...initial,date,desc,category,account,amount,type})} style={btnPrimary}>Save</button>
