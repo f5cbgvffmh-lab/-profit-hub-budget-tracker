@@ -3,7 +3,7 @@ import { getFirestore } from "firebase/firestore";
 import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAiGgFd11OGN7YBf_M225PAcfx1O4p6qjA",
+  apiKey: "AIzaSyAiGgFd11OGN7YBf_M225PAcfx104p6qjA",
   authDomain: "profit-metrics.firebaseapp.com",
   projectId: "profit-metrics",
   storageBucket: "profit-metrics.firebasestorage.app",
