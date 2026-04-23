@@ -1,61 +1,71 @@
-# PROFIT HUB V5 — UPLOAD INSTRUCTIONS
+# PROFIT HUB V6 — UPLOAD INSTRUCTIONS
 
-## YOUR DATA IS SAFE
-All your data lives in Firebase. This update only changes the code files.
-After uploading, log in and everything will be exactly where you left it.
+## WHAT'S NEW IN V6
+
+1. **Local Cache** — App loads instantly from localStorage, Firebase syncs in background. No more staring at a blank screen.
+2. **Accounts: Balance History Sparkline** — Each account card shows a mini graph of the balance over time.
+3. **Accounts: Transaction Feed** — Click any account card to see every transaction tied to that account.
+4. **Accounts: Health Score** — Flags low balance, high credit utilization, low savings.
+5. **Accounts: Credit Card Fields** — Credit limit, utilization %, shown with a thermometer bar.
+6. **Accounts: Transfer Between Accounts** — Move money between accounts without messing up income/expense totals.
+7. **Accounts: Totals Breakdown** — Bank total, investment total, credit owed shown at the top.
+8. **Auto-Balance Sync** — Adding/editing/deleting a transaction automatically updates the tagged account's balance.
+9. **Wipe All Data** — Double-confirmed reset button in the Customize/Theme page.
+10. **Full Color Customization** — Every color in the app is changeable and saves to Firebase.
+11. **Skeleton Loaders** — Placeholder cards show while data loads so it doesn't look blank.
+
+---
 
 ## HOW TO UPLOAD TO GITHUB
 
-Since V5 has multiple files and folders, the easiest way is to replace everything at once.
-
-### Step 1: Delete old files on GitHub
+### Step 1: Delete old files
 1. Go to your GitHub repo: github.com/f5cbgvffmh-lab/-profit-hub-budget-tracker
-2. Click "src" folder
-3. Delete each file inside (App.jsx, firebase.js, main.jsx):
-   - Click the file → three dots (top right) → Delete file → Commit
-4. Go back to root and delete: package.json, index.html, vite.config.js, .gitignore
-   - Same process for each
+2. Delete everything in the `src/` folder (App.jsx, firebase.js, main.jsx, and any subfolders)
+3. Delete root files: package.json, index.html, vite.config.js, .gitignore
 
 ### Step 2: Upload new files
-1. Extract the profit-hub-v5.zip on your computer
-2. Open the profit-hub-v5 folder
-3. Go to your GitHub repo (should be mostly empty now)
-4. Click "Add file" → "Upload files"
-5. Drag ALL the files and folders from inside profit-hub-v5:
-   - src/ (folder with all the files inside)
-   - public/ (empty folder, skip if GitHub won't accept)
-   - package.json
-   - index.html
-   - vite.config.js
-   - .gitignore
+1. Extract profit-hub-v6.zip on your computer
+2. Open the `profit-hub-v6` folder
+3. Go to your GitHub repo → "Add file" → "Upload files"
+4. Select ALL files inside the profit-hub-v6 folder (Ctrl+A)
+5. Drag them into GitHub
 6. Click "Commit changes"
 
 ### Step 3: Wait for Vercel
-Vercel auto-deploys in ~30 seconds. Check vercel.com to see if build passes.
+- Vercel auto-deploys in ~30 seconds
+- Check vercel.com if it doesn't update
+- Your data is 100% safe in Firebase — nothing changes on the database side
 
-### If the build fails:
-- Check the error in Vercel build logs
+---
+
+## FILE STRUCTURE
+
+```
+src/
+  App.jsx              — main orchestrator, all state + Firebase
+  firebase.js          — Firebase config
+  main.jsx             — entry point
+  utils/
+    constants.js       — colors, theme, helpers, defaults
+  components/
+    Auth.jsx           — login/signup screen
+    Sidebar.jsx        — navigation
+    UI.jsx             — modals, charts, buttons, loaders
+    Forms.jsx          — transaction form
+    Onboarding.jsx     — how-to guide
+  pages/
+    Dashboard.jsx      — dashboard page
+    Pages.jsx          — all other pages (Transactions, Budget, Savings, Debt, Investments, Net Worth, Accounts, Badges, Theme)
+package.json
+index.html
+vite.config.js
+.gitignore
+```
+
+---
+
+## IF BUILD FAILS
+
+- Check Vercel build logs for the error
 - Screenshot it and send to Claude
-
-## WHAT'S NEW IN V5
-
-### Structure (multi-file)
-- src/firebase.js — Firebase config
-- src/App.jsx — Main app orchestrator
-- src/utils/constants.js — Colors, helpers, defaults
-- src/components/UI.jsx — Shared components (charts, modals, buttons)
-- src/components/Forms.jsx — All form components
-- src/components/Auth.jsx — Login/signup screen
-- src/components/Sidebar.jsx — Navigation sidebar
-- src/components/Onboarding.jsx — How-to guide
-- src/pages/Dashboard.jsx — Dashboard page
-- src/pages/Pages.jsx — All other pages
-
-### New Features
-1. Mobile responsive — hamburger menu on phones, stacked layouts
-2. Floating quick-add button — always visible "+" to add transactions fast
-3. Search & filter on transactions page
-4. Confirmation dialog before deleting anything
-5. Spending insights — comparisons vs last month
-6. How-to guide — appears on first login, accessible via "How to Use" in sidebar
-7. All V4 features intact (auth, gamification, amortization, etc.)
+- Your data will still be safe in Firebase
